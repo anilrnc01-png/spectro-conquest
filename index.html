@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="icon" type="image/png" href="icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>SPECTRO CONQUEST: Pro Edition</title>
+    <style>
+        :root { --bg: #081c15; --gold: #ffca3a; --red: #e63946; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: var(--bg); color: white; margin: 0; padding: 10px;
+            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+        }
+
+        #setup-screen, #game-over {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.95);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; padding: 20px;
+        }
+        .card { 
+            background: #161a1d; padding: 30px; border-radius: 20px; 
+            border: 2px solid #4a4e69; text-align: center; width: 100%; max-width: 450px; 
+        }
+
+        #board-container {
+            width: 100%; max-width: 500px; aspect-ratio: 1/1;
+            background: radial-gradient(circle, #1a1a1a 0%, #000 100%);
+            border: 8px solid #3d2b1f; border-radius: 25px; display: none; margin-top: 5px;
+        }
+        canvas { width: 100%; height: 100%; }
+
+        #match-log {
+            width: 100%; max-width: 500px; text-align: center;
+            font-size: 1rem; color: var(--gold); font-weight: bold;
+            margin: 15px 0 5px 0; text-transform: uppercase; min-height: 1.2em;
+        }
+
+        #dice {
+            width: 100px; height: 100px; background: #fff; color: #000;
+            border-radius: 18px; font-size: 4rem; display: flex;
+            align-items: center; justify-content: center;
+            cursor: pointer; margin: 0 auto;
+            box-shadow: 0 8px 0 #bbb, 0 15px 25px rgba(0,0,0,0.4);
+            transition: transform 0.1s; user-select: none;
+        }
+        #dice:active { transform: translateY(4px); box-shadow: 0 4px 0 #bbb; }
+        #dice.rolling { animation: shake 0.2s infinite; pointer-events: none; }
+        @keyframes shake { 0%{transform:rotate(5deg)} 50%{transform:rotate(-5deg)} 100%{transform:rotate(5deg)} }
+
+        #score-container { width: 100%; max-width: 500px; margin-top: 20px; }
+        .stats-table { 
+            width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.05); 
+            border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);
+        }
+        .stats-table th { background: #2d3142; color: var(--gold); padding: 10px; font-size: 0.75rem; }
+        .stats-table td { padding: 12px 8px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .p-cell { text-align: left !important; font-weight: bold; border-left: 6px solid; padding-left: 10px; }
+        .active-row { background: rgba(255,202,58,0.15); }
+        
+        select, .btn-main { width: 100%; padding: 15px; margin: 10px 0; border-radius: 10px; font-weight: bold; border: none; }
+        .btn-main { background: var(--red); color: white; cursor: pointer; font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen">
+        <div class="card">
+            <h1 style="color:var(--gold); margin:0;">SPECTRO</h1>
+            <p style="opacity:0.7">Designed by Anil Sharma</p>
+            <select id="playerCount">
+                <option value="2">2 Players</option>
+                <option value="4" selected>4 Players</option>
+            </select>
+            <button class="btn-main" onclick="initGame()">ENTER ARENA</button>
+        </div>
+    </div>
+
+    <div id="game-over" style="display:none;">
+        <div class="card">
+            <h2 id="winner-text" style="color:var(--gold);">CONQUEROR!</h2>
+            <button class="btn-main" onclick="location.reload()">REPLAY</button>
+        </div>
+    </div>
+
+    <div id="board-container"><canvas id="gameCanvas" width="900" height="900"></canvas></div>
+    <div id="match-log">ARENA READY</div>
+
+    <div id="controls" style="display:none; margin: 10px 0;">
+        <div id="dice" onclick="startTurn()">🎲</div>
+        <p style="text-align:center; font-size:0.7rem; color:#888; margin-top:8px;">TOUCH DICE TO ROLL</p>
+    </div>
+
+    <div id="score-container" style="display:none;">
+        <table class="stats-table">
+            <thead><tr><th style="text-align:left;">PLAYER</th><th>RING</th><th>🐍</th><th>🐅</th><th>POINTS</th></tr></thead>
+            <tbody id="table-body"></tbody>
+        </table>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const RINGS = [340, 230, 120], TILES = [30, 20, 10];
+    const COLORS = ['#FF3B30', '#4CD964', '#007AFF', '#FFCC00'];
+    const HOMES = [{x: 820, y: 80}, {x: 80, y: 80}, {x: 80, y: 820}, {x: 820, y: 820}];
+
+    let players = [], tileData = [], hazards = [], gatePositions = [[0,10,20], [5,15], [8]];
+    let turn = 0, isMoving = false, bonusTurn = false, totalPlayers = 4, frame = 0;
+
+    function log(msg) { document.getElementById('match-log').innerText = msg; }
+
+    function initGame() {
+        totalPlayers = parseInt(document.getElementById('playerCount').value);
+        document.getElementById('setup-screen').style.display = 'none';
+        document.getElementById('board-container').style.display = 'block';
+        document.getElementById('controls').style.display = 'block';
+        document.getElementById('score-container').style.display = 'block';
+
+        for(let r=0; r<3; r++) {
+            tileData[r] = []; hazards[r] = [];
+            let avail = [];
+            for(let i=0; i<TILES[r]; i++) {
+                if(!gatePositions[r].includes(i)) avail.push(i);
+                tileData[r][i] = [0, 1, 5][Math.floor(Math.random() * 3)];
+            }
+            avail.sort(() => Math.random() - 0.5);
+            for(let i=0; i<4; i++) hazards[r][avail.pop()] = i < 2 ? 'tiger' : 'snake';
+        }
+
+        for(let i=0; i<totalPlayers; i++) {
+            players.push({ id: i+1, ring: 0, tile: Math.floor(i * (TILES[0]/totalPlayers)), points: 0, color: COLORS[i], curX: HOMES[i].x, curY: HOMES[i].y, inPlay: false, startPos: Math.floor(i * (TILES[0]/totalPlayers)), snakes: 0, tigers: 0 });
+        }
+        updateTable(); animate();
+    }
+
+    function getXY(rIdx, tIdx) {
+        const radius = RINGS[rIdx], angle = (tIdx / TILES[rIdx]) * Math.PI * 2;
+        return { x: 450 + Math.cos(angle)*radius, y: 450 + Math.sin(angle)*radius, angle };
+    }
+
+    function drawBoard() {
+        ctx.clearRect(0,0,900,900);
+        frame++;
+        RINGS.forEach((radius, rIdx) => {
+            for(let i=0; i<TILES[rIdx]; i++) {
+                const pos = getXY(rIdx, i);
+                ctx.save();
+                ctx.translate(pos.x, pos.y);
+                ctx.rotate(pos.angle + Math.PI/2);
+                ctx.fillStyle = rIdx === 0 ? "#0d2818" : rIdx === 1 ? "#432818" : "#3e0607";
+                ctx.strokeStyle = rIdx === 0 ? "#2d6a4f" : rIdx === 1 ? "#ffca3a" : "#ba181b";
+                ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.roundRect(-28, -20, 56, 40, 5); ctx.fill(); ctx.stroke();
+                ctx.restore();
+
+                if(gatePositions[rIdx].includes(i)) {
+                    ctx.shadowBlur = Math.sin(frame*0.05)*10+10; ctx.shadowColor = "cyan";
+                    ctx.font = "45px Arial"; ctx.fillText("⛩️", pos.x, pos.y); ctx.shadowBlur = 0;
+                } else if(hazards[rIdx][i] === 'tiger') { ctx.font = "40px Arial"; ctx.fillText("🐅", pos.x, pos.y); }
+                else if(hazards[rIdx][i] === 'snake') { ctx.font = "40px Arial"; ctx.fillText("🐍", pos.x, pos.y); }
+                else { ctx.fillStyle="rgba(255,255,255,0.4)"; ctx.font="bold 14px Arial"; ctx.textAlign="center"; ctx.fillText(tileData[rIdx][i]+"P", pos.x, pos.y); }
+            }
+        });
+        ctx.fillStyle = "#ffca3a"; ctx.shadowBlur = 20; ctx.shadowColor = "gold";
+        ctx.beginPath(); ctx.arc(450,450,70,0,Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle="#000"; ctx.textAlign="center"; ctx.font="bold 20px Arial"; ctx.fillText("SPECTRO", 450, 450);
+    }
+
+    function animate() {
+        drawBoard();
+        players.forEach((p, i) => {
+            let target = p.inPlay ? getXY(p.ring, p.tile) : HOMES[i];
+            p.curX += (target.x - p.curX) * 0.12; p.curY += (target.y - p.curY) * 0.12;
+            ctx.fillStyle = p.color; ctx.shadowBlur = 10; ctx.shadowColor = p.color;
+            ctx.beginPath(); ctx.arc(p.curX, p.curY, 22, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle="#fff"; ctx.lineWidth=3; ctx.stroke(); ctx.shadowBlur = 0;
+        });
+        requestAnimationFrame(animate);
+    }
+
+    function updateTable() {
+        document.getElementById('table-body').innerHTML = players.map((p, i) => `
+            <tr class="${turn === i ? 'active-row' : ''}">
+                <td class="p-cell" style="border-color:${p.color}">P${p.id}</td>
+                <td>R${p.ring}</td><td>${p.snakes}</td><td>${p.tigers}</td>
+                <td style="font-weight:bold; color:var(--gold);">${p.points}</td>
+            </tr>`).join('');
+    }
+
+    async function startTurn() {
+        if(isMoving) return; isMoving = true; bonusTurn = false;
+        const diceEl = document.getElementById('dice');
+        diceEl.classList.add('rolling');
+        await new Promise(r => setTimeout(r, 600));
+        const roll = Math.floor(Math.random() * 6) + 1;
+        diceEl.classList.remove('rolling'); diceEl.innerText = roll;
+        
+        const p = players[turn];
+        if(!p.inPlay) {
+            if(roll === 6) { p.inPlay = true; p.tile = p.startPos; bonusTurn = true; log(`P${p.id} ENTERED!`); }
+            else log(`P${p.id} NEEDS A 6`);
+        } else {
+            if(roll === 6) bonusTurn = true;
+            for(let s=0; s<roll; s++) { p.tile = (p.tile + 1) % TILES[p.ring]; await new Promise(r => setTimeout(r, 150)); }
+            checkLanding(p);
+        }
+        if(!bonusTurn) turn = (turn + 1) % totalPlayers;
+        updateTable(); isMoving = false;
+    }
+
+    function checkLanding(p) {
+        const h = hazards[p.ring][p.tile];
+        if(h === 'tiger') { p.tigers++; p.points = Math.max(0, p.points-50); log(`TIGER! P${p.id} -50`); if(p.ring === 2){p.inPlay=false; p.ring=0;} }
+        else if(h === 'snake') { p.snakes++; p.points = Math.max(0, p.points-25); log(`SNAKE! P${p.id} -25`); if(p.ring === 2){p.inPlay=false; p.ring=0;} }
+        else if(gatePositions[p.ring].includes(p.tile)) { p.ring++; p.tile=0; p.points+=50; log(`P${p.id} UP TO RING ${p.ring}`); if(p.ring === 3) showGameOver(p); }
+        else { p.points += tileData[p.ring][p.tile]; log(`P${p.id} COLLECTED POINTS`); }
+        players.forEach((other, idx) => {
+            if(idx !== turn && other.inPlay && other.ring === p.ring && other.tile === p.tile) { other.inPlay = false; other.ring = 0; bonusTurn = true; log(`P${p.id} CAPTURED P${other.id}!`); }
+        });
+    }
+
+    function showGameOver(winner) {
+        document.getElementById('game-over').style.display = 'flex';
+        document.getElementById('winner-text').innerText = `P${winner.id} CONQUERED SPECTRO!`;
+    }
+</script>
+</body>
+</html>
